@@ -1,6 +1,6 @@
 version: 0.1.0
 type: plugin
-author: langgenius
+author: watercrawl
 name: watercrawl_datasource3
 label:
   en_US: Watercrawl
