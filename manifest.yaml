@@ -1,0 +1,45 @@
+version: 0.1.0
+type: plugin
+author: langgenius
+name: watercrawl_datasource3
+label:
+  en_US: Watercrawl
+  ja_JP: Watercrawl
+  zh_Hans: Watercrawl
+  pt_BR: Watercrawl
+description:
+  en_US: Watercrawl Datasource
+  ja_JP: Watercrawl Datasource
+  zh_Hans: Watercrawl Datasource
+  pt_BR: Watercrawl Datasource
+icon: icon.svg
+resource:
+  memory: 268435456
+  permission:
+    model:
+      enabled: true
+      llm: false
+      text_embedding: false
+      rerank: false
+      tts: false
+      speech2text: false
+      moderation: false
+plugins:
+  datasources:
+    - provider/watercrawl_datasource.yaml
+meta:
+  version: 0.0.1
+  arch:
+    - amd64
+    - arm64
+  runner:
+    language: python
+    version: "3.12"
+    entrypoint: main
+  minimum_dify_version: 1.9.0
+created_at: 2025-05-14T16:03:40.268524+08:00
+privacy: PRIVACY.md
+verified: false
+provider_type: website_crawl
+tags:
+  - rag

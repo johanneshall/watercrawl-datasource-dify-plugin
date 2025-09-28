@@ -1,0 +1,55 @@
+name: Build WaterCrawl Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags (e.g., v1.0)
+  workflow_dispatch:
+
+permissions:
+  contents: write  # Allows the workflow to create releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # ✅ Required for creating releases
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Download Dify Plugin Daemon
+        run: |
+          wget https://github.com/langgenius/dify-plugin-daemon/releases/download/0.3.1/dify-plugin-linux-amd64 -O /tmp/dify
+          chmod +x /tmp/dify
+
+      - name: Package the plugin
+        run: |
+          cd /home/runner/work/watercrawl-dify-plugin && /tmp/dify plugin package ./watercrawl-dify-plugin
+          
+      - name: Create Release Notes
+        run: |
+          echo "## Release Notes" > release_notes.md
+          cat CHANGELOG.md >> release_notes.md
+
+      - name: Create GitHub Release
+        id: create_release  # ✅ This step now has an ID
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body_path: release_notes.md
+          token: ${{ secrets.GITHUB_TOKEN }}  # ✅ Using built-in token
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload .difypkg file
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: /home/runner/work/watercrawl-dify-plugin/watercrawl-dify-plugin.difypkg
+          asset_name: watercrawl-dify-plugin-${{ github.ref_name }}.difypkg
+          asset_content_type: application/octet-stream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
