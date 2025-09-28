@@ -1,7 +1,7 @@
 version: 0.1.0
 type: plugin
 author: watercrawl
-name: watercrawl_datasource3
+name: watercrawl_datasource
 label:
   en_US: Watercrawl
   ja_JP: Watercrawl
