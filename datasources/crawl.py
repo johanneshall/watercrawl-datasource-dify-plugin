@@ -35,24 +35,59 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                          or "https://app.watercrawl.dev",
             )
 
-            exclude_paths = datasource_parameters.get("exclude_paths").split(",") if datasource_parameters.get(
-                "exclude_paths") else []
-            include_paths = datasource_parameters.get("include_paths").split(",") if datasource_parameters.get(
-                "include_paths") else []
+            exclude_paths_param = datasource_parameters.get("exclude_paths")
+            exclude_paths = exclude_paths_param.split(",") if exclude_paths_param else []
+            
+            include_paths_param = datasource_parameters.get("include_paths")
+            include_paths = include_paths_param.split(",") if include_paths_param else []
+            
+            allowed_domains_param = datasource_parameters.get("allowed_domains")
+            allowed_domains = allowed_domains_param.split(",") if allowed_domains_param else []
+            
+            exclude_tags_param = datasource_parameters.get("exclude_tags")
+            exclude_tags = exclude_tags_param.split(",") if exclude_tags_param else []
+            
+            include_tags_param = datasource_parameters.get("include_tags")
+            include_tags = include_tags_param.split(",") if include_tags_param else []
+
+            # Parse extra_headers JSON if provided
+            import json
+            extra_headers = {}
+            extra_headers_param = datasource_parameters.get("extra_headers")
+            if extra_headers_param:
+                try:
+                    extra_headers = json.loads(extra_headers_param)
+                except json.JSONDecodeError:
+                    raise ValueError("extra_headers must be valid JSON")
+
+            spider_options = {
+                "max_depth": datasource_parameters.get("max_depth") or 1,
+                "page_limit": datasource_parameters.get("limit") or 1,
+                "exclude_paths": exclude_paths,
+                "include_paths": include_paths,
+            }
+            if allowed_domains:
+                spider_options["allowed_domains"] = allowed_domains
+            if datasource_parameters.get("proxy_server_slug"):
+                spider_options["proxy_server"] = datasource_parameters.get("proxy_server_slug")
+
+            page_options = {
+                "only_main_content": datasource_parameters.get("only_main_content", True),
+                "ignore_rendering": datasource_parameters.get("ignore_rendering", False),
+            }
+            if exclude_tags:
+                page_options["exclude_tags"] = exclude_tags
+            if include_tags:
+                page_options["include_tags"] = include_tags
+            if datasource_parameters.get("locale"):
+                page_options["locale"] = datasource_parameters.get("locale")
+            if extra_headers:
+                page_options["extra_headers"] = extra_headers
 
             crawl_request = client.create_crawl_request(
                 url=source_url,
-                spider_options={
-                    "max_depth": datasource_parameters.get("max_depth") or 1,
-                    "page_limit": datasource_parameters.get("limit") or 1,
-                    "exclude_paths": exclude_paths,
-                    "include_paths": include_paths,
-                    "proxy_server": datasource_parameters.get("proxy_server_slug")
-                },
-                page_options={
-                    "only_main_content": datasource_parameters.get("only_main_content", True),
-                    "ignore_rendering": datasource_parameters.get("ignore_rendering", False),
-                }
+                spider_options=spider_options,
+                page_options=page_options
             )
 
             crawl_res = WebSiteInfo(

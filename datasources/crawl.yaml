@@ -30,6 +30,19 @@ parameters:
   default: false
 - form: form
   description:
+    en_US: 'Allowed domains to crawl. Example: example.com, subdomain.example.com'
+    zh_Hans: 允许爬取的域名。示例：example.com, subdomain.example.com
+  label:
+    en_US: Allowed domains
+    zh_Hans: 允许的域名
+  name: allowed_domains
+  placeholder:
+    en_US: Use commas to separate multiple domains
+    zh_Hans: 多个域名时使用半角逗号分隔
+  required: false
+  type: string
+- form: form
+  description:
     en_US: 'Pages matching these patterns will be skipped. Example: blog/*, about/*'
     zh_Hans: 匹配这些模式的页面将被跳过。示例：blog/*, about/*
   label:
@@ -91,6 +104,55 @@ parameters:
   name: only_main_content
   type: boolean
   default: false
+- form: form
+  description:
+    en_US: 'Exclude tags from the page. Example: nav, footer, aside'
+    zh_Hans: 从页面中排除标签。示例：nav, footer, aside
+  label:
+    en_US: Exclude tags
+    zh_Hans: 排除标签
+  name: exclude_tags
+  placeholder:
+    en_US: Use commas to separate multiple tags
+    zh_Hans: 多个标签时使用半角逗号分隔
+  required: false
+  type: string
+- form: form
+  description:
+    en_US: 'Include only these tags from the page. Example: article, main, div'
+    zh_Hans: 只包含页面中的这些标签。示例：article, main, div
+  label:
+    en_US: Include tags
+    zh_Hans: 仅包含标签
+  name: include_tags
+  placeholder:
+    en_US: Use commas to separate multiple tags
+    zh_Hans: 多个标签时使用半角逗号分隔
+  required: false
+  type: string
+- form: form
+  description:
+    en_US: 'Locale for the page. Example: en-US, zh-CN'
+    zh_Hans: 页面的语言环境。示例：en-US, zh-CN
+  label:
+    en_US: Locale
+    zh_Hans: 语言环境
+  name: locale
+  placeholder:
+    en_US: e.g., en-US
+    zh_Hans: 例如：zh-CN
+  required: false
+  type: string
+- form: form
+  description:
+    en_US: Extra headers to send with the request in JSON format.
+    zh_Hans: 以JSON格式发送的额外请求头。
+  label:
+    en_US: Extra headers (JSON)
+    zh_Hans: 额外请求头(JSON)
+  name: extra_headers
+  required: false
+  type: string
 - form: form
   description:
     en_US: Proxy Server to use for the crawl.
