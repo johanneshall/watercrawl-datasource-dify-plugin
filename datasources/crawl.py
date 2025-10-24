@@ -1,4 +1,5 @@
 import time
+import json
 from collections.abc import Generator
 from typing import Any, Mapping
 
@@ -10,6 +11,12 @@ from dify_plugin.entities.datasource import (
 from dify_plugin.interfaces.datasource.website import WebsiteCrawlDatasource
 from dify_plugin.errors.tool import ToolProviderCredentialValidationError
 from requests import HTTPError
+from requests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    Timeout,
+    RequestException
+)
 from watercrawl import WaterCrawlAPIClient
 
 
@@ -99,22 +106,63 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             yield self.create_crawl_message(crawl_res)
 
             results = []
-            for data in client.monitor_crawl_request(crawl_request['uuid']):
-                info = data['data']
-                if data['type'] == 'result':
-                    results.append(
-                        self._process_result(info)
-                    )
+            max_retries = 3
+            retry_delay = 2  # seconds
+            
+            for attempt in range(max_retries):
+                try:
+                    for data in client.monitor_crawl_request(crawl_request['uuid']):
+                        info = data['data']
+                        if data['type'] == 'result':
+                            results.append(
+                                self._process_result(info)
+                            )
 
-                crawl_res.completed = len(results)
-                yield self.create_crawl_message(crawl_res)
+                        crawl_res.completed = len(results)
+                        yield self.create_crawl_message(crawl_res)
+                    
+                    # Successfully completed the monitoring
+                    break
+                    
+                except (ChunkedEncodingError, ConnectionError, Timeout) as e:
+                    if attempt < max_retries - 1:
+                        # Wait before retrying
+                        time.sleep(retry_delay * (attempt + 1))
+                        # Continue monitoring from where we left off
+                        continue
+                    else:
+                        # Final attempt failed, but we have partial results
+                        # Log the error but don't fail the entire crawl
+                        crawl_res.status = "completed"
+                        crawl_res.web_info_list = results
+                        yield self.create_crawl_message(crawl_res)
+                        return
+                        
+                except RequestException as e:
+                    # Other request exceptions - retry with backoff
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                    else:
+                        # Return partial results on final failure
+                        crawl_res.status = "completed"
+                        crawl_res.web_info_list = results
+                        yield self.create_crawl_message(crawl_res)
+                        return
 
             crawl_res.status = "completed"
             crawl_res.web_info_list = results
             yield self.create_crawl_message(crawl_res)
 
+        except ToolProviderCredentialValidationError:
+            # Re-raise credential errors without modification
+            raise
+        except ValueError as e:
+            # Re-raise validation errors
+            raise
         except Exception as e:
-            raise ValueError(f"Failed to crawl website {str(e)}")
+            # Catch any other unexpected errors
+            raise ValueError(f"Failed to crawl website: {str(e)}")
 
     @staticmethod
     def _process_result(data):
