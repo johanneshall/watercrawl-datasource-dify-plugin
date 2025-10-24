@@ -23,8 +23,8 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             self, datasource_parameters: Mapping[str, Any]
     ) -> Generator[WebsiteCrawlMessage, None, None]:
         """
-        the api doc:
-        https://docs.watercrawl.dev
+        WaterCrawl datasource implementation.
+        API docs: https://docs.watercrawl.dev
         """
         source_url = datasource_parameters.get("url")
         if not source_url:
@@ -40,6 +40,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                          or "https://app.watercrawl.dev",
             )
 
+            # Parse comma-separated list parameters
             exclude_paths_param = datasource_parameters.get("exclude_paths")
             exclude_paths = exclude_paths_param.split(",") if exclude_paths_param else []
             
@@ -65,6 +66,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                 except json.JSONDecodeError:
                     raise ValueError("extra_headers must be valid JSON")
 
+            # Build spider options
             spider_options = {
                 "max_depth": datasource_parameters.get("max_depth") or 1,
                 "page_limit": datasource_parameters.get("limit") or 1,
@@ -76,6 +78,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             if datasource_parameters.get("proxy_server_slug"):
                 spider_options["proxy_server"] = datasource_parameters.get("proxy_server_slug")
 
+            # Build page options
             page_options = {
                 "only_main_content": datasource_parameters.get("only_main_content", True),
                 "ignore_rendering": datasource_parameters.get("ignore_rendering", False),
@@ -89,13 +92,14 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             if extra_headers:
                 page_options["extra_headers"] = extra_headers
 
+            # Create crawl request
             crawl_request = client.create_crawl_request(
                 url=source_url,
                 spider_options=spider_options,
                 page_options=page_options
             )
 
-            # Initialize and yield initial status
+            # Initialize crawl result (empty web_info_list for processing)
             crawl_res = WebSiteInfo(
                 web_info_list=[],
                 status="processing",
@@ -104,123 +108,97 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             )
             yield self.create_crawl_message(crawl_res)
             
-            # Monitor crawl progress with retries and live counting
+            # Cache for results as they come in
+            all_results = []
             seen_urls = set()
             consecutive_failures = 0
             max_consecutive_failures = 3
-            monitoring_completed = False
             
             while consecutive_failures < max_consecutive_failures:
                 try:
-                    for event in client.monitor_crawl_request(crawl_request['uuid'], download=False):
+                    # Monitor with download=True to get full content as it streams
+                    for event in client.monitor_crawl_request(crawl_request['uuid'], download=True):
                         event_type = event.get('type')
                         
                         # Reset failure count on successful event
                         consecutive_failures = 0
                         
-                        # Track progress with deduplication
                         if event_type == 'result':
-                            result_url = event.get('data', {}).get('url')
+                            # Cache result as it comes in
+                            result_data = event.get('data', {})
+                            result_url = result_data.get('url')
+                            
+                            # Deduplicate by URL
                             if result_url and result_url not in seen_urls:
                                 seen_urls.add(result_url)
-                                crawl_res.completed = len(seen_urls)
+                                all_results.append(self._process_result(result_data))
+                                
+                                # Send progress update WITHOUT web_info_list (Dify ignores it anyway)
+                                crawl_res.completed = len(all_results)
+                                crawl_res.web_info_list = []  # Keep empty for processing
                                 yield self.create_crawl_message(crawl_res)
                         
-                        # Check for completion
                         elif event_type == 'state':
                             status = event.get('data', {}).get('status')
+                            crawl_res.total = event.get('data', {}).get('number_of_documents', crawl_res.total)
+                            
                             if status in ['finished', 'failed', 'canceled']:
-                                monitoring_completed = True
-                                break
+                                # FINAL message with ALL cached results
+                                crawl_res.status = "completed"
+                                crawl_res.web_info_list = all_results  # <-- ONLY NOW send results
+                                crawl_res.completed = len(all_results)
+                                crawl_res.total = len(all_results)
+                                yield self.create_crawl_message(crawl_res)
+                                return
                     
-                    # If we got the completion state, break out of retry loop
-                    if monitoring_completed:
-                        break
-                    
-                    # Monitoring stream ended without completion state
-                    # This shouldn't happen normally, so break and fetch results
+                    # Monitoring completed successfully
                     break
                     
                 except (ChunkedEncodingError, ConnectionError, Timeout, RequestException):
                     consecutive_failures += 1
                     if consecutive_failures < max_consecutive_failures:
-                        # Wait before retrying with exponential backoff
                         time.sleep(2 * consecutive_failures)
                         continue
-                    # Max consecutive failures reached, will fetch results below
                     break
             
-            # Fetch and yield final results exactly once
-            yield from self._fetch_and_yield_final_results(
-                client, crawl_request['uuid'], crawl_res
-            )
-
-        except ToolProviderCredentialValidationError:
-            # Re-raise credential errors without modification
-            raise
-        except ValueError as e:
-            # Re-raise validation errors
-            raise
-        except Exception as e:
-            # Catch any other unexpected errors
-            raise ValueError(f"Failed to crawl website: {str(e)}")
-
-    def _fetch_and_yield_final_results(
-        self, client: WaterCrawlAPIClient, crawl_uuid: str, crawl_res: WebSiteInfo
-    ) -> Generator[WebsiteCrawlMessage, None, None]:
-        """Fetch all results from API and yield final completion message."""
-        try:
-            all_results = []
-            page = 1
-            
-            while True:
-                # Fetch results with download=True to get embedded result objects
-                results_response = client.get_crawl_request_results(
-                    crawl_uuid, 
-                    page=page, 
-                    page_size=100,
-                    download=True
-                )
-                
-                if not results_response:
-                    break
-                
-                # Get results from this page
-                results = results_response.get('results', [])
-                if not results:
-                    break
-                
-                # Process all results from this page
-                for result_data in results:
-                    all_results.append(self._process_result(result_data))
-                
-                # Check if there's a next page using the 'next' field
-                # This is the standard Django REST pagination pattern
-                if not results_response.get('next'):
-                    break
-                    
-                page += 1
-            
-            # Yield final completion message with all results
+            # Final message if monitoring ended without explicit completion
             crawl_res.status = "completed"
-            crawl_res.web_info_list = all_results
+            crawl_res.web_info_list = all_results  # <-- Send cached results
             crawl_res.completed = len(all_results)
             crawl_res.total = len(all_results)
             yield self.create_crawl_message(crawl_res)
-            
+
+        except ToolProviderCredentialValidationError:
+            raise
+        except ValueError as e:
+            raise
         except Exception as e:
-            # On API failure, return empty completion
-            crawl_res.status = "completed"
-            crawl_res.web_info_list = []
-            yield self.create_crawl_message(crawl_res)
+            raise ValueError(f"Failed to crawl website: {str(e)}")
 
     @staticmethod
     def _process_result(data):
+        """Process a single crawl result with content truncation."""
         result = data.get("result", {})
+        if isinstance(result, str):
+            # If result is a URL string (shouldn't happen with download=True)
+            return WebSiteInfoDetail(
+                source_url=data.get("url", ""),
+                content="",
+                title="",
+                description=""
+            )
+        
         metadata = result.get("metadata", {})
+        content = result.get("markdown", "") or ""
+        
+        # Truncate extremely large content to prevent buffer overflow
+        max_content_length = 50000  # 50KB per page
+        if len(content) > max_content_length:
+            content = content[:max_content_length] + "\n\n[Content truncated due to size...]"
+        
         return WebSiteInfoDetail(
-            source_url=data["url"],
-            content=result.get("markdown", "") or "",
+            source_url=data.get("url", ""),
+            content=content,
             title=metadata.get("title", "") or metadata.get("og:title", "") or "",
-            description=metadata.get('description') or metadata.get('og:description') or ""
+            description=metadata.get("description", "") or metadata.get("og:description", "") or ""
         )
