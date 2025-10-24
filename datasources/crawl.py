@@ -1,5 +1,4 @@
 import time
-import json
 from collections.abc import Generator
 from typing import Any, Mapping
 
@@ -10,7 +9,6 @@ from dify_plugin.entities.datasource import (
 )
 from dify_plugin.interfaces.datasource.website import WebsiteCrawlDatasource
 from dify_plugin.errors.tool import ToolProviderCredentialValidationError
-from requests import HTTPError
 from requests.exceptions import (
     ChunkedEncodingError,
     ConnectionError,
@@ -110,6 +108,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             seen_urls = set()
             consecutive_failures = 0
             max_consecutive_failures = 3
+            monitoring_completed = False
             
             while consecutive_failures < max_consecutive_failures:
                 try:
@@ -131,13 +130,15 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         elif event_type == 'state':
                             status = event.get('data', {}).get('status')
                             if status in ['finished', 'failed', 'canceled']:
-                                # Fetch and yield final results
-                                yield from self._fetch_and_yield_final_results(
-                                    client, crawl_request['uuid'], crawl_res
-                                )
-                                return
+                                monitoring_completed = True
+                                break
                     
-                    # Monitoring completed successfully without state event
+                    # If we got the completion state, break out of retry loop
+                    if monitoring_completed:
+                        break
+                    
+                    # Monitoring stream ended without completion state
+                    # This shouldn't happen normally, so break and fetch results
                     break
                     
                 except (ChunkedEncodingError, ConnectionError, Timeout, RequestException):
@@ -146,10 +147,10 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         # Wait before retrying with exponential backoff
                         time.sleep(2 * consecutive_failures)
                         continue
-                    # Max consecutive failures reached, fetch results anyway
+                    # Max consecutive failures reached, will fetch results below
                     break
             
-            # Fetch final results from API (either after successful monitoring or retry failure)
+            # Fetch and yield final results exactly once
             yield from self._fetch_and_yield_final_results(
                 client, crawl_request['uuid'], crawl_res
             )
@@ -220,6 +221,6 @@ class CrawlDatasource(WebsiteCrawlDatasource):
         return WebSiteInfoDetail(
             source_url=data["url"],
             content=result.get("markdown", "") or "",
-            title=metadata.get("title", "") or metadata.get( "og:title", "") or "",
+            title=metadata.get("title", "") or metadata.get("og:title", "") or "",
             description=metadata.get('description') or metadata.get('og:description') or ""
         )
