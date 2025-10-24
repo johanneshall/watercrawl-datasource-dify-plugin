@@ -108,10 +108,16 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             
             # Monitor crawl progress with retries and live counting
             seen_urls = set()
-            for attempt in range(3):
+            consecutive_failures = 0
+            max_consecutive_failures = 3
+            
+            while consecutive_failures < max_consecutive_failures:
                 try:
                     for event in client.monitor_crawl_request(crawl_request['uuid'], download=False):
                         event_type = event.get('type')
+                        
+                        # Reset failure count on successful event
+                        consecutive_failures = 0
                         
                         # Track progress with deduplication
                         if event_type == 'result':
@@ -131,14 +137,16 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                                 )
                                 return
                     
-                    # Monitoring completed without state event
+                    # Monitoring completed successfully without state event
                     break
                     
                 except (ChunkedEncodingError, ConnectionError, Timeout, RequestException):
-                    if attempt < 2:  # Retry
-                        time.sleep(2 * (attempt + 1))
+                    consecutive_failures += 1
+                    if consecutive_failures < max_consecutive_failures:
+                        # Wait before retrying with exponential backoff
+                        time.sleep(2 * consecutive_failures)
                         continue
-                    # Final attempt failed, fetch results anyway
+                    # Max consecutive failures reached, fetch results anyway
                     break
             
             # Fetch final results from API (either after successful monitoring or retry failure)
