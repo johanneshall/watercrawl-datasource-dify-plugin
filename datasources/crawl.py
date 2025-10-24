@@ -99,11 +99,14 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                 page_options=page_options
             )
 
-            # Initialize crawl result (empty web_info_list for processing)
+            # Get expected total from page_limit (FIXED - set once)
+            expected_total = crawl_request['options']['spider_options']['page_limit']
+            
+            # Initialize crawl result
             crawl_res = WebSiteInfo(
                 web_info_list=[],
                 status="processing",
-                total=crawl_request['options']['spider_options']['page_limit'],
+                total=expected_total,  # Fixed value, never changed
                 completed=0
             )
             yield self.create_crawl_message(crawl_res)
@@ -124,30 +127,34 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         consecutive_failures = 0
                         
                         if event_type == 'result':
-                            # Cache result as it comes in
+                            # Process and cache result
                             result_data = event.get('data', {})
                             result_url = result_data.get('url')
                             
                             # Deduplicate by URL
                             if result_url and result_url not in seen_urls:
                                 seen_urls.add(result_url)
-                                all_results.append(self._process_result(result_data))
+                                processed = self._process_result(result_data)
+                                all_results.append(processed)
                                 
-                                # Send progress update WITHOUT web_info_list (Dify ignores it anyway)
+                                # KEY FIX: Send cumulative results (Tavily pattern)
+                                # This ensures Dify gets the data incrementally
                                 crawl_res.completed = len(all_results)
-                                crawl_res.web_info_list = []  # Keep empty for processing
+                                crawl_res.web_info_list = all_results.copy()  # Send ALL results so far
+                                crawl_res.status = "processing"
+                                # Keep total fixed
                                 yield self.create_crawl_message(crawl_res)
                         
                         elif event_type == 'state':
                             status = event.get('data', {}).get('status')
-                            crawl_res.total = event.get('data', {}).get('number_of_documents', crawl_res.total)
+                            # DON'T update total from state
                             
                             if status in ['finished', 'failed', 'canceled']:
-                                # FINAL message with ALL cached results
+                                # Final completion message
                                 crawl_res.status = "completed"
-                                crawl_res.web_info_list = all_results  # <-- ONLY NOW send results
+                                crawl_res.web_info_list = all_results
                                 crawl_res.completed = len(all_results)
-                                crawl_res.total = len(all_results)
+                                crawl_res.total = len(all_results)  # Update total to actual count at end
                                 yield self.create_crawl_message(crawl_res)
                                 return
                     
@@ -163,9 +170,9 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             
             # Final message if monitoring ended without explicit completion
             crawl_res.status = "completed"
-            crawl_res.web_info_list = all_results  # <-- Send cached results
+            crawl_res.web_info_list = all_results
             crawl_res.completed = len(all_results)
-            crawl_res.total = len(all_results)
+            crawl_res.total = len(all_results)  # Update total to actual count at end
             yield self.create_crawl_message(crawl_res)
 
         except ToolProviderCredentialValidationError:
@@ -179,26 +186,46 @@ class CrawlDatasource(WebsiteCrawlDatasource):
     def _process_result(data):
         """Process a single crawl result with content truncation."""
         result = data.get("result", {})
+        
+        # Debug: Check what we're getting
         if isinstance(result, str):
-            # If result is a URL string (shouldn't happen with download=True)
+            # Result is a URL string - this shouldn't happen with download=True
+            # But handle it gracefully
             return WebSiteInfoDetail(
                 source_url=data.get("url", ""),
-                content="",
+                content=f"[Error: Result was a URL instead of content object: {result}]",
                 title="",
                 description=""
             )
         
+        if not isinstance(result, dict):
+            # Unexpected result type
+            return WebSiteInfoDetail(
+                source_url=data.get("url", ""),
+                content=f"[Error: Unexpected result type: {type(result)}]",
+                title="",
+                description=""
+            )
+        
+        # Extract metadata and content
         metadata = result.get("metadata", {})
-        content = result.get("markdown", "") or ""
+        content = result.get("markdown", "") or result.get("content", "") or ""
+        
+        # Ensure we have some content
+        if not content:
+            content = "[No content available]"
         
         # Truncate extremely large content to prevent buffer overflow
-        max_content_length = 50000  # 50KB per page
+        max_content_length = 100000  # 100KB per page (more generous with increased buffer)
         if len(content) > max_content_length:
             content = content[:max_content_length] + "\n\n[Content truncated due to size...]"
+        
+        title = metadata.get("title", "") or metadata.get("og:title", "") or ""
+        description = metadata.get("description", "") or metadata.get("og:description", "") or ""
         
         return WebSiteInfoDetail(
             source_url=data.get("url", ""),
             content=content,
-            title=metadata.get("title", "") or metadata.get("og:title", "") or "",
-            description=metadata.get("description", "") or metadata.get("og:description", "") or ""
+            title=title,
+            description=description
         )
