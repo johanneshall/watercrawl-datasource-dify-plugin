@@ -106,16 +106,20 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             )
             yield self.create_crawl_message(crawl_res)
             
-            # Monitor crawl progress with retries
+            # Monitor crawl progress with retries and live counting
+            seen_urls = set()
             for attempt in range(3):
                 try:
                     for event in client.monitor_crawl_request(crawl_request['uuid'], download=False):
                         event_type = event.get('type')
                         
-                        # Track and report progress on each result
+                        # Track progress with deduplication
                         if event_type == 'result':
-                            crawl_res.completed += 1
-                            yield self.create_crawl_message(crawl_res)
+                            result_url = event.get('data', {}).get('url')
+                            if result_url and result_url not in seen_urls:
+                                seen_urls.add(result_url)
+                                crawl_res.completed = len(seen_urls)
+                                yield self.create_crawl_message(crawl_res)
                         
                         # Check for completion
                         elif event_type == 'state':
@@ -161,6 +165,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             page = 1
             
             while True:
+                # Fetch results with download=True to get embedded result objects
                 results_response = client.get_crawl_request_results(
                     crawl_uuid, 
                     page=page, 
@@ -168,14 +173,23 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                     download=True
                 )
                 
-                if not results_response or not results_response.get('results'):
+                if not results_response:
                     break
                 
-                for result_data in results_response['results']:
+                # Get results from this page
+                results = results_response.get('results', [])
+                if not results:
+                    break
+                
+                # Process all results from this page
+                for result_data in results:
                     all_results.append(self._process_result(result_data))
                 
-                if page >= results_response.get('total_pages', 1):
+                # Check if there's a next page using the 'next' field
+                # This is the standard Django REST pagination pattern
+                if not results_response.get('next'):
                     break
+                    
                 page += 1
             
             # Yield final completion message with all results
@@ -185,7 +199,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             crawl_res.total = len(all_results)
             yield self.create_crawl_message(crawl_res)
             
-        except Exception:
+        except Exception as e:
             # On API failure, return empty completion
             crawl_res.status = "completed"
             crawl_res.web_info_list = []
