@@ -97,7 +97,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                 page_options=page_options
             )
 
-            # Initialize crawl result and yield initial status
+            # Initialize and yield initial status
             crawl_res = WebSiteInfo(
                 web_info_list=[],
                 status="processing",
@@ -106,93 +106,41 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             )
             yield self.create_crawl_message(crawl_res)
             
-            # Track progress and deduplicate results
-            seen_urls = set()
-            web_info_list = []
-            max_retries = 3
-            retry_delay = 2  # seconds
-            batch_size = 50  # Yield updates every N results to avoid buffer overflow
-            
-            for attempt in range(max_retries):
+            # Monitor crawl progress with retries
+            for attempt in range(3):
                 try:
-                    # Monitor with download=True to get result objects instead of URLs
-                    for event in client.monitor_crawl_request(crawl_request['uuid'], download=True):
+                    for event in client.monitor_crawl_request(crawl_request['uuid'], download=False):
                         event_type = event.get('type')
                         
-                        # Handle state changes
-                        if event_type == 'state':
-                            state_data = event.get('data', {})
-                            status = state_data.get('status')
-                            
-                            # Check if crawl is completed or failed
+                        # Track and report progress on each result
+                        if event_type == 'result':
+                            crawl_res.completed += 1
+                            yield self.create_crawl_message(crawl_res)
+                        
+                        # Check for completion
+                        elif event_type == 'state':
+                            status = event.get('data', {}).get('status')
                             if status in ['completed', 'failed', 'stopped']:
-                                # Send final message with all results
-                                crawl_res.status = "completed"
-                                crawl_res.web_info_list = web_info_list
-                                crawl_res.completed = len(web_info_list)
-                                crawl_res.total = len(web_info_list)
-                                yield self.create_crawl_message(crawl_res)
+                                # Fetch and yield final results
+                                yield from self._fetch_and_yield_final_results(
+                                    client, crawl_request['uuid'], crawl_res
+                                )
                                 return
-                        
-                        # Handle result events - accumulate and batch yield
-                        elif event_type == 'result':
-                            result_data = event.get('data')
-                            if result_data:
-                                # Deduplicate by URL to handle retries
-                                result_url = result_data.get('url')
-                                if result_url and result_url not in seen_urls:
-                                    seen_urls.add(result_url)
-                                    processed_result = self._process_result(result_data)
-                                    web_info_list.append(processed_result)
-                                    
-                                    # Yield progress update every batch_size results
-                                    if len(web_info_list) % batch_size == 0:
-                                        crawl_res.web_info_list = web_info_list.copy()
-                                        crawl_res.completed = len(web_info_list)
-                                        yield self.create_crawl_message(crawl_res)
-                        
-                        # Ignore 'feed' events (engine feedback)
-                        elif event_type == 'feed':
-                            continue
                     
-                    # Successfully completed the monitoring
+                    # Monitoring completed without state event
                     break
                     
-                except (ChunkedEncodingError, ConnectionError, Timeout) as e:
-                    if attempt < max_retries - 1:
-                        # Wait before retrying
-                        time.sleep(retry_delay * (attempt + 1))
-                        # Continue monitoring from where we left off
+                except (ChunkedEncodingError, ConnectionError, Timeout, RequestException):
+                    if attempt < 2:  # Retry
+                        time.sleep(2 * (attempt + 1))
                         continue
-                    else:
-                        # Final attempt failed, return what we have
-                        crawl_res.status = "completed"
-                        crawl_res.web_info_list = web_info_list
-                        crawl_res.completed = len(web_info_list)
-                        crawl_res.total = len(web_info_list)
-                        yield self.create_crawl_message(crawl_res)
-                        return
-                        
-                except RequestException as e:
-                    # Other request exceptions - retry with backoff
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay * (attempt + 1))
-                        continue
-                    else:
-                        # Return with partial results
-                        crawl_res.status = "completed"
-                        crawl_res.web_info_list = web_info_list
-                        crawl_res.completed = len(web_info_list)
-                        crawl_res.total = len(web_info_list)
-                        yield self.create_crawl_message(crawl_res)
-                        return
-
-            # Fallback if we exit the loop without a state event
-            crawl_res.status = "completed"
-            crawl_res.web_info_list = web_info_list
-            crawl_res.completed = len(web_info_list)
-            crawl_res.total = len(web_info_list)
-            yield self.create_crawl_message(crawl_res)
+                    # Final attempt failed, fetch results anyway
+                    break
+            
+            # Fetch final results from API (either after successful monitoring or retry failure)
+            yield from self._fetch_and_yield_final_results(
+                client, crawl_request['uuid'], crawl_res
+            )
 
         except ToolProviderCredentialValidationError:
             # Re-raise credential errors without modification
@@ -203,6 +151,45 @@ class CrawlDatasource(WebsiteCrawlDatasource):
         except Exception as e:
             # Catch any other unexpected errors
             raise ValueError(f"Failed to crawl website: {str(e)}")
+
+    def _fetch_and_yield_final_results(
+        self, client: WaterCrawlAPIClient, crawl_uuid: str, crawl_res: WebSiteInfo
+    ) -> Generator[WebsiteCrawlMessage, None, None]:
+        """Fetch all results from API and yield final completion message."""
+        try:
+            all_results = []
+            page = 1
+            
+            while True:
+                results_response = client.get_crawl_request_results(
+                    crawl_uuid, 
+                    page=page, 
+                    page_size=100,
+                    download=True
+                )
+                
+                if not results_response or not results_response.get('results'):
+                    break
+                
+                for result_data in results_response['results']:
+                    all_results.append(self._process_result(result_data))
+                
+                if page >= results_response.get('total_pages', 1):
+                    break
+                page += 1
+            
+            # Yield final completion message with all results
+            crawl_res.status = "completed"
+            crawl_res.web_info_list = all_results
+            crawl_res.completed = len(all_results)
+            crawl_res.total = len(all_results)
+            yield self.create_crawl_message(crawl_res)
+            
+        except Exception:
+            # On API failure, return empty completion
+            crawl_res.status = "completed"
+            crawl_res.web_info_list = []
+            yield self.create_crawl_message(crawl_res)
 
     @staticmethod
     def _process_result(data):
