@@ -1,2 +1,2 @@
-dify_plugin==0.5.0
+dify_plugin==0.5.1
 watercrawl-py==0.9.2

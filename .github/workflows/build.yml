@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # Allows the workflow to create releases
+  contents: write  # Allows the workflow to create releasesß
 
 jobs:
   build:
@@ -21,7 +21,7 @@ jobs:
 
       - name: Download Dify Plugin Daemon
         run: |
-          wget https://github.com/langgenius/dify-plugin-daemon/releases/download/0.3.1/dify-plugin-linux-amd64 -O /tmp/dify
+          wget https://github.com/langgenius/dify-plugin-daemon/releases/download/0.3.3/dify-plugin-linux-amd64 -O /tmp/dify
           chmod +x /tmp/dify
 
       - name: Package the plugin
