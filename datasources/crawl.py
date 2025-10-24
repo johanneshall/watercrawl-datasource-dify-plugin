@@ -97,10 +97,21 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                 page_options=page_options
             )
 
-            # Track progress
-            completed_count = 0
+            # Initialize crawl result and yield initial status
+            crawl_res = WebSiteInfo(
+                web_info_list=[],
+                status="processing",
+                total=crawl_request['options']['spider_options']['page_limit'],
+                completed=0
+            )
+            yield self.create_crawl_message(crawl_res)
+            
+            # Track progress and deduplicate results
+            seen_urls = set()
+            web_info_list = []
             max_retries = 3
             retry_delay = 2  # seconds
+            batch_size = 50  # Yield updates every N results to avoid buffer overflow
             
             for attempt in range(max_retries):
                 try:
@@ -115,31 +126,30 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                             
                             # Check if crawl is completed or failed
                             if status in ['completed', 'failed', 'stopped']:
-                                # Send final completion message
-                                final_message = WebSiteInfo(
-                                    web_info_list=[],
-                                    status="completed",
-                                    total=crawl_request['options']['spider_options']['page_limit'],
-                                    completed=completed_count
-                                )
-                                yield self.create_crawl_message(final_message)
+                                # Send final message with all results
+                                crawl_res.status = "completed"
+                                crawl_res.web_info_list = web_info_list
+                                crawl_res.completed = len(web_info_list)
+                                crawl_res.total = len(web_info_list)
+                                yield self.create_crawl_message(crawl_res)
                                 return
                         
-                        # Handle result events - yield each result immediately
+                        # Handle result events - accumulate and batch yield
                         elif event_type == 'result':
                             result_data = event.get('data')
                             if result_data:
-                                processed_result = self._process_result(result_data)
-                                completed_count += 1
-                                
-                                # Yield each result individually to avoid buffer overflow
-                                result_message = WebSiteInfo(
-                                    web_info_list=[processed_result],
-                                    status="processing",
-                                    total=crawl_request['options']['spider_options']['page_limit'],
-                                    completed=completed_count
-                                )
-                                yield self.create_crawl_message(result_message)
+                                # Deduplicate by URL to handle retries
+                                result_url = result_data.get('url')
+                                if result_url and result_url not in seen_urls:
+                                    seen_urls.add(result_url)
+                                    processed_result = self._process_result(result_data)
+                                    web_info_list.append(processed_result)
+                                    
+                                    # Yield progress update every batch_size results
+                                    if len(web_info_list) % batch_size == 0:
+                                        crawl_res.web_info_list = web_info_list.copy()
+                                        crawl_res.completed = len(web_info_list)
+                                        yield self.create_crawl_message(crawl_res)
                         
                         # Ignore 'feed' events (engine feedback)
                         elif event_type == 'feed':
@@ -155,14 +165,12 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         # Continue monitoring from where we left off
                         continue
                     else:
-                        # Final attempt failed, return completion with what we have
-                        final_message = WebSiteInfo(
-                            web_info_list=[],
-                            status="completed",
-                            total=crawl_request['options']['spider_options']['page_limit'],
-                            completed=completed_count
-                        )
-                        yield self.create_crawl_message(final_message)
+                        # Final attempt failed, return what we have
+                        crawl_res.status = "completed"
+                        crawl_res.web_info_list = web_info_list
+                        crawl_res.completed = len(web_info_list)
+                        crawl_res.total = len(web_info_list)
+                        yield self.create_crawl_message(crawl_res)
                         return
                         
                 except RequestException as e:
@@ -171,24 +179,20 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         time.sleep(retry_delay * (attempt + 1))
                         continue
                     else:
-                        # Return completion with partial results
-                        final_message = WebSiteInfo(
-                            web_info_list=[],
-                            status="completed",
-                            total=crawl_request['options']['spider_options']['page_limit'],
-                            completed=completed_count
-                        )
-                        yield self.create_crawl_message(final_message)
+                        # Return with partial results
+                        crawl_res.status = "completed"
+                        crawl_res.web_info_list = web_info_list
+                        crawl_res.completed = len(web_info_list)
+                        crawl_res.total = len(web_info_list)
+                        yield self.create_crawl_message(crawl_res)
                         return
 
             # Fallback if we exit the loop without a state event
-            final_message = WebSiteInfo(
-                web_info_list=[],
-                status="completed",
-                total=crawl_request['options']['spider_options']['page_limit'],
-                completed=completed_count
-            )
-            yield self.create_crawl_message(final_message)
+            crawl_res.status = "completed"
+            crawl_res.web_info_list = web_info_list
+            crawl_res.completed = len(web_info_list)
+            crawl_res.total = len(web_info_list)
+            yield self.create_crawl_message(crawl_res)
 
         except ToolProviderCredentialValidationError:
             # Re-raise credential errors without modification
