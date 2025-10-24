@@ -111,15 +111,35 @@ class CrawlDatasource(WebsiteCrawlDatasource):
             
             for attempt in range(max_retries):
                 try:
-                    for data in client.monitor_crawl_request(crawl_request['uuid']):
-                        info = data['data']
-                        if data['type'] == 'result':
-                            results.append(
-                                self._process_result(info)
-                            )
-
-                        crawl_res.completed = len(results)
-                        yield self.create_crawl_message(crawl_res)
+                    # Monitor with download=True to get result objects instead of URLs
+                    for event in client.monitor_crawl_request(crawl_request['uuid'], download=True):
+                        event_type = event.get('type')
+                        
+                        # Handle state changes
+                        if event_type == 'state':
+                            state_data = event.get('data', {})
+                            status = state_data.get('status')
+                            
+                            # Check if crawl is completed or failed
+                            if status in ['completed', 'failed', 'stopped']:
+                                crawl_res.status = "completed"
+                                crawl_res.web_info_list = results
+                                yield self.create_crawl_message(crawl_res)
+                                return
+                        
+                        # Handle result events
+                        elif event_type == 'result':
+                            result_data = event.get('data')
+                            if result_data:
+                                results.append(
+                                    self._process_result(result_data)
+                                )
+                                crawl_res.completed = len(results)
+                                yield self.create_crawl_message(crawl_res)
+                        
+                        # Ignore 'feed' events (engine feedback)
+                        elif event_type == 'feed':
+                            continue
                     
                     # Successfully completed the monitoring
                     break
@@ -131,8 +151,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         # Continue monitoring from where we left off
                         continue
                     else:
-                        # Final attempt failed, but we have partial results
-                        # Log the error but don't fail the entire crawl
+                        # Final attempt failed, return partial results
                         crawl_res.status = "completed"
                         crawl_res.web_info_list = results
                         yield self.create_crawl_message(crawl_res)
@@ -150,6 +169,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         yield self.create_crawl_message(crawl_res)
                         return
 
+            # Fallback if we exit the loop without a state event
             crawl_res.status = "completed"
             crawl_res.web_info_list = results
             yield self.create_crawl_message(crawl_res)
