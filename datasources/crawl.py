@@ -130,7 +130,7 @@ class CrawlDatasource(WebsiteCrawlDatasource):
                         # Check for completion
                         elif event_type == 'state':
                             status = event.get('data', {}).get('status')
-                            if status in ['completed', 'failed', 'stopped']:
+                            if status in ['finished', 'failed', 'canceled']:
                                 # Fetch and yield final results
                                 yield from self._fetch_and_yield_final_results(
                                     client, crawl_request['uuid'], crawl_res
